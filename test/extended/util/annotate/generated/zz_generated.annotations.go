@@ -1885,6 +1885,8 @@ var annotations = map[string]string{
 
 	"[Top Level] [sig-instrumentation][sig-builds][Feature:Builds] Prometheus when installed on the cluster should start and expose a secured proxy and verify build metrics": "should start and expose a secured proxy and verify build metrics [Suite:openshift/conformance/parallel]",
 
+	"[Top Level] [sig-network-edge] DNS hello world": "hello world [Suite:openshift/conformance/parallel]",
+
 	"[Top Level] [sig-network-edge] DNS should answer endpoint and wildcard queries for the cluster": "should answer endpoint and wildcard queries for the cluster [Disabled:Broken]",
 
 	"[Top Level] [sig-network-edge][Conformance][Area:Networking][Feature:Router] The HAProxy router should pass the gRPC interoperability tests": "should pass the gRPC interoperability tests [Suite:openshift/conformance/parallel/minimal]",

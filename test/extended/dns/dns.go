@@ -5,11 +5,13 @@ import (
 	"bytes"
 	"context"
 	"fmt"
+	exutil "github.com/openshift/origin/test/extended/util"
 	"io"
 	"io/ioutil"
 	"strings"
 
 	. "github.com/onsi/ginkgo"
+	. "github.com/onsi/gomega"
 
 	kapiv1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/errors"
@@ -297,6 +299,29 @@ func ipsForEndpoints(ep *kapiv1.Endpoints) []string {
 
 var _ = Describe("[sig-network-edge] DNS", func() {
 	f := e2e.NewDefaultFramework("dns")
+
+	It("hello world", func() {
+		oc := exutil.NewCLI("hello").Verbose()
+		out, err := oc.Run("get").Args("--all-namespaces", "deployment",
+			"-o", "template", "--template",
+			`{{range .items}}{{.metadata.name}},{{.spec.replicas}}{{"\n"}}{{end}}`,
+		).Output()
+		e2e.Logf("Got %s", out)
+		Expect(err).NotTo(HaveOccurred())
+		e2e.Logf("No error")
+
+		for _, line := range strings.Split(out, "\n") {
+			e2e.Logf("%s", line)
+			components := strings.Split(line, ",")
+			Expect(components).To(HaveLen(2))
+			operator := components[0]
+			replicas := components[1]
+			e2e.Logf("%s %s", operator, replicas)
+
+			Expect(replicas).To(Equal("1"),
+				"%s has too many %s replicas", operator, replicas)
+		}
+	})
 
 	It("should answer endpoint and wildcard queries for the cluster", func() {
 		ctx := context.Background()
