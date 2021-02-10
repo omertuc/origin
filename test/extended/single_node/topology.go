@@ -35,6 +35,13 @@ func getNamespaceDeployments(f *e2e.Framework, namespace corev1.Namespace) []app
 	return list.Items
 }
 
+func getNamespaceStatefulSets(f *e2e.Framework, namespace corev1.Namespace) []appsv1.StatefulSet {
+	list, err := f.ClientSet.AppsV1().StatefulSets(namespace.Name).List(context.Background(), metav1.ListOptions{})
+	Expect(err).NotTo(HaveOccurred())
+
+	return list.Items
+}
+
 func getTopologies(f *e2e.Framework) (controlPlaneTopology, infraTopology v1.TopologyMode) {
 	oc := exutil.NewCLIWithFramework(f)
 	infra, err := oc.AdminConfigClient().ConfigV1().Infrastructures().Get(context.Background(),
@@ -44,6 +51,30 @@ func getTopologies(f *e2e.Framework) (controlPlaneTopology, infraTopology v1.Top
 	return infra.Status.ControlPlaneTopology, infra.Status.InfrastructureTopology
 }
 
+// isInfrastructureStatefulSet decides if a StatefulSet is considered "infrastructure" or
+// "control plane" by comparing it against a known list
+func isInfrastructureStatefulSet(statefulSet appsv1.StatefulSet) bool {
+	infrastructureNamespaces := map[string][]string{
+		// No known OpenShift StatefulSets are considered "infrastructure" for now
+	}
+
+	namespaceInfraStatefulSets, ok := infrastructureNamespaces[statefulSet.Namespace]
+
+	if !ok {
+		return false
+	}
+
+	for _, infraStatefulSetName := range namespaceInfraStatefulSets {
+		if statefulSet.Name == infraStatefulSetName {
+			return true
+		}
+	}
+
+	return false
+}
+
+// isInfrastructureDeployment decides if a deployment is considered "infrastructure" or
+// "control plane" by comparing it against a known list
 func isInfrastructureDeployment(deployment appsv1.Deployment) bool {
 	infrastructureNamespaces := map[string][]string{
 		"openshift-ingress": {
@@ -66,7 +97,35 @@ func isInfrastructureDeployment(deployment appsv1.Deployment) bool {
 	return false
 }
 
-func validateReplicas(deployment appsv1.Deployment,
+func validateReplicas(name, namespace string, replicas int, failureAllowed bool) {
+	if !failureAllowed {
+		Expect(replicas).To(Equal(1),
+			"%s in %s namespace has wrong number of replicas", name, namespace)
+	} else {
+		if replicas == 1 {
+			t := GinkgoT()
+			t.Logf("%s in namespace %s has one replica, consider taking it off the topology allow-list",
+				name, namespace)
+		}
+	}
+}
+
+func validateStatefulSetReplicas(statefulSet appsv1.StatefulSet, controlPlaneTopology,
+	infraTopology v1.TopologyMode, failureAllowed bool) {
+	if isInfrastructureStatefulSet(statefulSet) {
+		if infraTopology != v1.SingleReplicaTopologyMode {
+			return
+		}
+	} else if controlPlaneTopology != v1.SingleReplicaTopologyMode {
+		return
+	}
+
+	Expect(statefulSet.Spec.Replicas).ToNot(BeNil())
+
+	validateReplicas(statefulSet.Name, statefulSet.Namespace, int(*statefulSet.Spec.Replicas), failureAllowed)
+}
+
+func validateDeploymentReplicas(deployment appsv1.Deployment,
 	controlPlaneTopology, infraTopology v1.TopologyMode, failureAllowed bool) {
 	if isInfrastructureDeployment(deployment) {
 		if infraTopology != v1.SingleReplicaTopologyMode {
@@ -78,30 +137,21 @@ func validateReplicas(deployment appsv1.Deployment,
 
 	Expect(deployment.Spec.Replicas).ToNot(BeNil())
 
-	replicas := int(*deployment.Spec.Replicas)
-
-	if !failureAllowed {
-		Expect(replicas).To(Equal(1),
-			"%s in %s namespace has wrong number of replicas", deployment.Name, deployment.Namespace)
-	} else {
-		if replicas == 1 {
-			t := GinkgoT()
-			t.Logf("Deployment %s in namespace %s has one replica, consider taking it off the topology allow-list",
-				deployment.Name, deployment.Namespace)
-		}
-	}
+	validateReplicas(deployment.Name, deployment.Namespace, int(*deployment.Spec.Replicas), failureAllowed)
 }
 
-func isAllowedToFail(deployment appsv1.Deployment) bool {
-	// allowedToFail is a list of deployments that currently have 2 replicas even in single-replica
-	// topology deployments, because their operator has yet to be made aware of the new API.
-	// We will slowly remove deployments from this list once their operators have been made
-	// aware until this list is empty and this function will be removed.
+func isAllowedToFail(name, namespace string) bool {
+	// allowedToFail is a list of deployments and statefulsets that currently have 2 replicas
+	// even in single-replica topology deployments, because their operator has yet to be made
+	// aware of the new API. We will slowly remove deployments from this list once their operators
+	// have been made aware, until this list is empty and this function will be removed.
 	allowedToFail := map[string][]string{
 		"openshift-authentication": {
+			// Deployments
 			"oauth-openshift",
 		},
 		"openshift-console": {
+			// Deployments
 			"console",
 			"downloads",
 		},
@@ -109,27 +159,41 @@ func isAllowedToFail(deployment appsv1.Deployment) bool {
 			"image-registry",
 		},
 		"openshift-monitoring": {
+			// Deployments
 			"prometheus-adapter",
 			"thanos-querier",
+
+			// StatefulSets
+			"alertmanager-main",
+			"prometheus-k8s",
 		},
 		"openshift-operator-lifecycle-manager": {
+			// Deployments
 			"packageserver",
 		},
 	}
 
-	namespaceAllowedToFailDeployments, ok := allowedToFail[deployment.Namespace]
+	namespaceAllowedToFailDeployments, ok := allowedToFail[namespace]
 
 	if !ok {
 		return false
 	}
 
 	for _, allowedToFailDeploymentName := range namespaceAllowedToFailDeployments {
-		if deployment.Name == allowedToFailDeploymentName {
+		if name == allowedToFailDeploymentName {
 			return true
 		}
 	}
 
 	return false
+}
+
+func isDeploymentAllowedToFail(deployment appsv1.Deployment) bool {
+	return isAllowedToFail(deployment.Name, deployment.Namespace)
+}
+
+func isStatefulSetAllowedToFail(statefulSet appsv1.StatefulSet) bool {
+	return isAllowedToFail(statefulSet.Name, statefulSet.Namespace)
 }
 
 var _ = Describe("[sig-arch] Cluster topology single node tests", func() {
@@ -144,7 +208,13 @@ var _ = Describe("[sig-arch] Cluster topology single node tests", func() {
 
 		for _, namespace := range getOpenshiftNamespaces(f) {
 			for _, deployment := range getNamespaceDeployments(f, namespace) {
-				validateReplicas(deployment, controlPlaneTopology, infraTopology, isAllowedToFail(deployment))
+				validateDeploymentReplicas(deployment,
+					controlPlaneTopology, infraTopology, isDeploymentAllowedToFail(deployment))
+			}
+
+			for _, statefulSet := range getNamespaceStatefulSets(f, namespace) {
+				validateStatefulSetReplicas(statefulSet,
+					controlPlaneTopology, infraTopology, isStatefulSetAllowedToFail(statefulSet))
 			}
 		}
 	})
