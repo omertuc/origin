@@ -55,14 +55,13 @@ func getTopologies(f *e2e.Framework) (controlPlaneTopology, infraTopology v1.Top
 // "control plane" by comparing it against a known list
 func isInfrastructureStatefulSet(statefulSet appsv1.StatefulSet) bool {
 	infrastructureNamespaces := map[string][]string{
-		// No known OpenShift StatefulSets are considered "infrastructure" for now
+		"openshift-monitoring": {
+			"alertmanager-main",
+			"prometheus-k8s",
+		},
 	}
 
-	namespaceInfraStatefulSets, ok := infrastructureNamespaces[statefulSet.Namespace]
-
-	if !ok {
-		return false
-	}
+	namespaceInfraStatefulSets, _ := infrastructureNamespaces[statefulSet.Namespace]
 
 	for _, infraStatefulSetName := range namespaceInfraStatefulSets {
 		if statefulSet.Name == infraStatefulSetName {
@@ -82,11 +81,7 @@ func isInfrastructureDeployment(deployment appsv1.Deployment) bool {
 		},
 	}
 
-	namespaceInfraDeployments, ok := infrastructureNamespaces[deployment.Namespace]
-
-	if !ok {
-		return false
-	}
+	namespaceInfraDeployments, _ := infrastructureNamespaces[deployment.Namespace]
 
 	for _, infraDeploymentName := range namespaceInfraDeployments {
 		if deployment.Name == infraDeploymentName {
