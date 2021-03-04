@@ -16,6 +16,7 @@ import (
 	dto "github.com/prometheus/client_model/go"
 	"github.com/prometheus/common/expfmt"
 
+	configv1 "github.com/openshift/api/config/v1"
 	v1 "k8s.io/api/core/v1"
 
 	kapierrs "k8s.io/apimachinery/pkg/api/errors"
@@ -55,6 +56,16 @@ var _ = g.Describe("[sig-instrumentation][Late] Alerts", func() {
 		if len(os.Getenv("TEST_UNSUPPORTED_ALLOW_VERSION_SKEW")) > 0 {
 			e2eskipper.Skipf("Test is disabled to allow cluster components to have different versions, and skewed versions trigger multiple other alerts")
 		}
+
+		infra, err := oc.AdminConfigClient().ConfigV1().Infrastructures().Get(context.Background(), "cluster", metav1.GetOptions{})
+		o.Expect(err).NotTo(o.HaveOccurred())
+
+		allowedAlerts := []string{"Watchdog", "AlertmanagerReceiversNotConfigured"}
+		if infra.Status.ControlPlaneTopology == configv1.SingleReplicaTopologyMode {
+			//TODO: MON-1522 bug - these alerts wrongly fire in single replica topology, remove this if statement once that bug is fixed.
+			allowedAlerts = append(allowedAlerts, "KubeMemoryOvercommit", "KubeCPUOvercommit")
+		}
+
 		ns := oc.SetupNamespace()
 		execPod := exutil.CreateExecPodOrFail(oc.AdminKubeClient(), ns, "execpod")
 		defer func() {
@@ -71,11 +82,11 @@ var _ = g.Describe("[sig-instrumentation][Late] Alerts", func() {
 			//   appears to be a teardown bug - the apiserver is not removed quickly, see https://bugzilla.redhat.com/show_bug.cgi?id=1933144
 			fmt.Sprintf(`
 sort_desc((
-count_over_time(ALERTS{alertname!~"Watchdog|AlertmanagerReceiversNotConfigured",alertstate="firing",severity!="info"}[%[1]s:1s]) unless
-count_over_time(ALERTS{alertname="AggregatedAPIDown",name="v1alpha1.wardle.example.com",alertstate="firing"}[%[1]s:1s])
-) > 0)`, testDuration): false,
+count_over_time(ALERTS{alertname!~"%[1]s",alertstate="firing",severity!="info"}[%[2]s:1s]) unless
+count_over_time(ALERTS{alertname="AggregatedAPIDown",name="v1alpha1.wardle.example.com",alertstate="firing"}[%[2]s:1s])
+) > 0)`, strings.Join(allowedAlerts, "|"), testDuration): false,
 		}
-		err := helper.RunQueries(tests, oc, ns, execPod.Name, url, bearerToken)
+		err = helper.RunQueries(tests, oc, ns, execPod.Name, url, bearerToken)
 		o.Expect(err).NotTo(o.HaveOccurred())
 	})
 
@@ -396,11 +407,20 @@ var _ = g.Describe("[sig-instrumentation] Prometheus", func() {
 				oc.AdminKubeClient().CoreV1().Pods(ns).Delete(context.Background(), execPod.Name, *metav1.NewDeleteOptions(1))
 			}()
 
-			tests := map[string]bool{
-				// Checking Watchdog alert state is done in "should have a Watchdog alert in firing state".
-				`ALERTS{alertname!~"Watchdog|AlertmanagerReceiversNotConfigured|PrometheusRemoteWriteDesiredShards",alertstate="firing",severity!="info"} >= 1`: false,
+			infra, err := oc.AdminConfigClient().ConfigV1().Infrastructures().Get(context.Background(), "cluster", metav1.GetOptions{})
+			o.Expect(err).NotTo(o.HaveOccurred())
+
+			// Checking Watchdog alert state is done in "should have a Watchdog alert in firing state".
+			allowedAlerts := []string{"Watchdog", "AlertmanagerReceiversNotConfigured", "PrometheusRemoteWriteDesiredShards"}
+			if infra.Status.ControlPlaneTopology == configv1.SingleReplicaTopologyMode {
+				//TODO: MON-1522 bug - these alerts wrongly fire in single replica topology, remove this if statement once that bug is fixed.
+				allowedAlerts = append(allowedAlerts, "KubeMemoryOvercommit", "KubeCPUOvercommit")
 			}
-			err := helper.RunQueries(tests, oc, ns, execPod.Name, url, bearerToken)
+
+			tests := map[string]bool{
+				fmt.Sprintf(`ALERTS{alertname!~"%s",alertstate="firing",severity!="info"} >= 1`, strings.Join(allowedAlerts, "|")): false,
+			}
+			err = helper.RunQueries(tests, oc, ns, execPod.Name, url, bearerToken)
 			o.Expect(err).NotTo(o.HaveOccurred())
 		})
 		g.It("should provide ingress metrics", func() {
